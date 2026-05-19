@@ -519,7 +519,16 @@
             data.runtimeDir ? `运行目录: ${data.runtimeDir}` : "",
             data.fileStatus || "暂无文件信息",
           ].filter(Boolean).join("\n\n"));
-          setPanelText("argo-logs-content", data.argoLog || "暂无Argo日志");
+          setPanelText("argo-logs-content", [
+            "===== suoha-start.log =====",
+            data.startLog || "暂无启动日志",
+            "===== suoha.log =====",
+            data.suohaLog || "暂无脚本日志",
+            "===== xray.log =====",
+            data.xrayLog || "暂无Xray日志",
+            "===== argo.log =====",
+            data.argoLog || "暂无Argo日志",
+          ].join("\n"));
           markRefreshed();
         } catch (error) {
           const message = "获取日志失败: " + error.message;
