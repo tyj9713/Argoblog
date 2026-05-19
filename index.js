@@ -6,16 +6,17 @@ const { execSync } = require("node:child_process");
 const { promisify } = require("node:util");
 const fs = require("node:fs");
 const { ServiceManager, buildReadyResponse } = require("./lib/service-manager");
+const { resolveRuntimeDir } = require("./lib/runtime");
 
 const execAsync = promisify(exec);
-const runtimeDir = process.env.ARGO_RUNTIME_DIR
-  || (fs.existsSync('/home') ? '/home/argoblog' : __dirname);
+const runtimeDir = resolveRuntimeDir(process.env, __dirname);
 fs.mkdirSync(runtimeDir, { recursive: true });
 
 const serviceManager = new ServiceManager({
   execAsync,
   logger: console,
   cwd: runtimeDir,
+  logFile: runtimePath('suoha-start.log'),
   script: () => {
     const generatedScript = runtimePath('suoha.sh');
     return fs.existsSync(generatedScript) ? generatedScript : path.join(__dirname, 'suoha.sh');
@@ -41,6 +42,19 @@ function runCommand(command) {
       stderr.trim(),
       `命令执行失败: ${error.message}`,
     ].filter(Boolean).join("\n");
+  }
+}
+
+function readLogFile(fileName) {
+  const filePath = runtimePath(fileName);
+  if (!fs.existsSync(filePath)) {
+    return `${fileName}不存在`;
+  }
+
+  try {
+    return fs.readFileSync(filePath, 'utf8') || `${fileName}为空`;
+  } catch (error) {
+    return `读取${fileName}失败: ${error.message}`;
   }
 }
 
@@ -193,14 +207,7 @@ app.get('/logs', (req, res) => {
     // 检查系统和进程信息
     const sysInfo = runCommand("uname -a 2>&1; df -h 2>&1; ls -la 2>&1");
     const processInfo = runCommand("ps -ef 2>&1 | grep -E 'xray|cloudflared|suoha' || true");
-    const fileCheck = runCommand(`ls -la ${shellQuote(runtimeDir)} ${shellQuote(runtimePath('suoha.sh'))} ${shellQuote(runtimePath('v2ray.txt'))} 2>&1 || true`);
-    
-    // 提取argo日志，如果存在的话
-    let argoLog = "argo.log不存在";
-    const argoLogPath = runtimePath('argo.log');
-    if (fs.existsSync(argoLogPath)) {
-      argoLog = fs.readFileSync(argoLogPath, 'utf8');
-    }
+    const fileCheck = runCommand(`ls -la ${shellQuote(runtimeDir)} ${shellQuote(runtimePath('suoha.sh'))} ${shellQuote(runtimePath('v2ray.txt'))} ${shellQuote(runtimePath('xray'))} ${shellQuote(runtimePath('cloudflared-linux'))} 2>&1 || true`);
     
     res.json({
       ok: true,
@@ -208,7 +215,10 @@ app.get('/logs', (req, res) => {
       processes: processInfo,
       fileStatus: fileCheck,
       runtimeDir,
-      argoLog: argoLog
+      startLog: readLogFile('suoha-start.log'),
+      suohaLog: readLogFile('suoha.log'),
+      xrayLog: readLogFile('xray.log'),
+      argoLog: readLogFile('argo.log')
     });
   } catch (error) {
     res.status(500).json({ error: "获取日志信息失败", message: error.message });
