@@ -38,41 +38,88 @@ then
 	fi
 fi
 
+xray_binary_ready() {
+	[ -f "xray/xray" ] && [ -x "xray/xray" ]
+}
+
+cloudflared_ready() {
+	[ -f "cloudflared-linux" ] && [ -x "cloudflared-linux" ]
+}
+
+download_xray_zip() {
+	case "$(uname -m)" in
+		x86_64 | x64 | amd64 )
+		curl -fsSL https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
+		;;
+		i386 | i686 )
+		curl -fsSL https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-32.zip -o xray.zip
+		;;
+		armv8 | arm64 | aarch64 )
+		curl -fsSL https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip -o xray.zip
+		;;
+		armv7l )
+		curl -fsSL https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm32-v7a.zip -o xray.zip
+		;;
+		* )
+		echo 当前架构$(uname -m)没有适配
+		return 1
+		;;
+	esac
+}
+
+download_cloudflared_binary() {
+	case "$(uname -m)" in
+		x86_64 | x64 | amd64 )
+		curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared-linux
+		;;
+		i386 | i686 )
+		curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-386 -o cloudflared-linux
+		;;
+		armv8 | arm64 | aarch64 )
+		curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared-linux
+		;;
+		armv7l )
+		curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm -o cloudflared-linux
+		;;
+		* )
+		echo 当前架构$(uname -m)没有适配
+		return 1
+		;;
+	esac
+}
+
+ensure_xray_binary() {
+	if xray_binary_ready; then
+		echo "Xray 已存在，跳过下载解压"
+		return 0
+	fi
+
+	echo "正在下载并解压 Xray..."
+	rm -f xray.zip
+	download_xray_zip || exit 1
+	mkdir -p xray
+	unzip -o -d xray xray.zip
+	chmod +x xray/xray
+	rm -f xray.zip
+	xray_binary_ready || { echo "Xray 安装失败"; exit 1; }
+}
+
+ensure_cloudflared_binary() {
+	if cloudflared_ready; then
+		echo "cloudflared 已存在，跳过下载"
+		return 0
+	fi
+
+	echo "正在下载 cloudflared..."
+	rm -f cloudflared-linux
+	download_cloudflared_binary || exit 1
+	chmod +x cloudflared-linux
+	cloudflared_ready || { echo "cloudflared 安装失败"; exit 1; }
+}
+
 function quicktunnel(){
-# 检查文件是否已经存在，如不存在则下载
-if [ ! -d "xray" ] || [ ! -f "cloudflared-linux" ] || [ ! -x "xray/xray" ] || [ ! -x "cloudflared-linux" ]; then
-    rm -rf xray cloudflared-linux xray.zip
-    case "$(uname -m)" in
-        x86_64 | x64 | amd64 )
-        curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
-        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared-linux
-        ;;
-        i386 | i686 )
-        curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-32.zip -o xray.zip
-        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-386 -o cloudflared-linux
-        ;;
-        armv8 | arm64 | aarch64 )
-        echo arm64
-        curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip -o xray.zip
-        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared-linux
-        ;;
-        armv7l )
-        curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm32-v7a.zip -o xray.zip
-        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm -o cloudflared-linux
-        ;;
-        * )
-        echo 当前架构$(uname -m)没有适配
-        exit
-        ;;
-    esac
-    mkdir -p xray
-    unzip -d xray xray.zip
-    chmod +x cloudflared-linux xray/xray
-    rm -rf xray.zip
-else
-    echo "文件已存在，跳过下载和解压步骤"
-    chmod +x cloudflared-linux xray/xray
-fi
+ensure_xray_binary
+ensure_cloudflared_binary
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
 urlpath=$(echo $uuid | awk -F- '{print $1}')

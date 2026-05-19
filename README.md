@@ -4,7 +4,9 @@
 
 - 建议部署到 Linux Web App，启动命令保持 `npm start`。
 - 在 Azure Portal 开启 `Always On`，Health check path 配置为 `/healthz`。
-- 运行时文件默认写入 `/home/argoblog`，可通过环境变量 `ARGO_RUNTIME_DIR` 覆盖。
+- 运行时文件默认写入应用部署目录，和 `suoha.sh`、`v2ray.txt`、`xray`、`cloudflared-linux` 保持在同一处；如需单独目录，可通过环境变量 `ARGO_RUNTIME_DIR` 覆盖。
+- `xray/xray` 与 `cloudflared-linux` 已存在且可执行时，`suoha.sh` 会跳过对应组件的下载/解压；`entrypoint.sh` 不再用旧模板覆盖 `suoha.sh`。
+- `/logs` 会返回 `suoha-start.log`、`suoha.log`、`xray.log`、`argo.log`，用于排查启动失败原因。
 - `/healthz` 只检查 Node 进程是否存活；`/readyz` 会额外检查 Xray 和 Cloudflared 进程状态。
 - 启动和重启服务会立即返回，实际进度通过页面状态、`/suoha-status`、`/logs` 查看。
 
