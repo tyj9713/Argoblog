@@ -1,9 +1,48 @@
 const express = require("express");
 const app = express();
-const path = require("path");
-const exec = require("child_process").exec;
-const { execSync } = require("child_process");
-const fs = require("fs");
+const path = require("node:path");
+const exec = require("node:child_process").exec;
+const { execSync } = require("node:child_process");
+const { promisify } = require("node:util");
+const fs = require("node:fs");
+const { ServiceManager, buildReadyResponse } = require("./lib/service-manager");
+
+const execAsync = promisify(exec);
+const runtimeDir = process.env.ARGO_RUNTIME_DIR
+  || (fs.existsSync('/home') ? '/home/argoblog' : __dirname);
+fs.mkdirSync(runtimeDir, { recursive: true });
+
+const serviceManager = new ServiceManager({
+  execAsync,
+  logger: console,
+  cwd: runtimeDir,
+  script: () => {
+    const generatedScript = runtimePath('suoha.sh');
+    return fs.existsSync(generatedScript) ? generatedScript : path.join(__dirname, 'suoha.sh');
+  },
+});
+
+function runtimePath(fileName) {
+  return path.join(runtimeDir, fileName);
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function runCommand(command) {
+  try {
+    return execSync(command, { timeout: 10000, maxBuffer: 1024 * 1024 }).toString();
+  } catch (error) {
+    const output = error.stdout ? error.stdout.toString() : "";
+    const stderr = error.stderr ? error.stderr.toString() : "";
+    return [
+      output.trim(),
+      stderr.trim(),
+      `命令执行失败: ${error.message}`,
+    ].filter(Boolean).join("\n");
+  }
+}
 
 // 使用express.json中间件解析JSON请求体
 app.use(express.json());
@@ -15,36 +54,58 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// 获取suoha服务状态
-app.get('/suoha-status', (req, res) => {
-  exec("ps -ef | grep -v grep | grep -E 'xray|cloudflared-linux'", (err, stdout, stderr) => {
-    console.log("服务状态检查结果:", stdout);
-    const xrayRunning = stdout.includes("xray");
-    const argoRunning = stdout.includes("cloudflared-linux");
-    
-    res.json({
-      xrayRunning,
-      argoRunning,
-      bothRunning: xrayRunning && argoRunning
-    });
+// Azure App Service health check / Always On probe target.
+app.get('/healthz', (req, res) => {
+  res.json({
+    ok: true,
+    uptime: process.uptime(),
+    runtimeDir,
   });
+});
+
+app.get('/readyz', async (req, res) => {
+  try {
+    const ready = buildReadyResponse(await serviceManager.status(), process.uptime());
+    res.status(ready.statusCode).json(ready.body);
+  } catch (error) {
+    res.status(503).json({
+      ok: false,
+      uptime: process.uptime(),
+      error: error.message,
+    });
+  }
+});
+
+// 获取suoha服务状态
+app.get('/suoha-status', async (req, res) => {
+  try {
+    res.json(await serviceManager.status());
+  } catch (error) {
+    console.error("服务状态检查失败:", error.message);
+    res.status(500).json({ error: "服务状态检查失败", message: error.message });
+  }
 });
 
 // 获取服务器信息
 app.get('/server-info', (req, res) => {
-  exec("cat /etc/os-release && uname -a && curl -s https://speed.cloudflare.com/meta", (err, stdout, stderr) => {
-    if (err) {
-      res.status(500).json({ error: "获取服务器信息失败" });
-    } else {
-      res.json({ info: stdout });
-    }
+  exec("cat /etc/os-release 2>&1; uname -a 2>&1; curl -s --max-time 8 https://speed.cloudflare.com/meta 2>&1", (err, stdout, stderr) => {
+    const parts = [];
+    if (stdout) parts.push(stdout.trim());
+    if (stderr) parts.push(stderr.trim());
+    if (err) parts.push(`命令执行失败: ${err.message}`);
+
+    res.json({
+      ok: !err,
+      info: parts.filter(Boolean).join("\n\n") || "暂无服务器信息",
+    });
   });
 });
 
 // 获取v2ray链接信息
 app.get('/xxxooo', (req, res) => {
-  if (fs.existsSync('./v2ray.txt')) {
-    fs.readFile('./v2ray.txt', 'utf8', (err, data) => {
+  const v2rayPath = runtimePath('v2ray.txt');
+  if (fs.existsSync(v2rayPath)) {
+    fs.readFile(v2rayPath, 'utf8', (err, data) => {
       if (err) {
         res.status(500).send("读取v2ray.txt失败");
       } else {
@@ -58,8 +119,9 @@ app.get('/xxxooo', (req, res) => {
 
 // 获取v2ray链接信息
 app.get('/v2ray-info', (req, res) => {
-  if (fs.existsSync('./v2ray.txt')) {
-    fs.readFile('./v2ray.txt', 'utf8', (err, data) => {
+  const v2rayPath = runtimePath('v2ray.txt');
+  if (fs.existsSync(v2rayPath)) {
+    fs.readFile(v2rayPath, 'utf8', (err, data) => {
       if (err) {
         res.status(500).json({ error: "读取v2ray.txt失败" });
       } else {
@@ -72,33 +134,16 @@ app.get('/v2ray-info', (req, res) => {
 });
 
 // 启动suoha服务
-app.post('/start-suoha', (req, res) => {
+app.post('/start-suoha', async (req, res) => {
   console.log("开始启动suoha服务...");
   try {
-    // 先确保相关进程已停止
-    try {
-      execSync("pkill -9 xray || true");
-      execSync("pkill -9 cloudflared-linux || true");
-      console.log("已清理可能存在的旧进程");
-    } catch (cleanupErr) {
-      console.log("清理旧进程时出现非致命错误:", cleanupErr.message);
-    }
-    
-    // 确保suoha.sh可执行
-    execSync("chmod +x suoha.sh");
-    console.log("已设置suoha.sh为可执行");
-    
-    // 执行脚本并等待结果
-    const stdout = execSync("bash suoha.sh 2>&1", { timeout: 60000 });
-    console.log("suoha服务启动输出:", stdout.toString());
-    
-    // 检查进程是否在运行
-    const processCheck = execSync("ps -ef | grep -v grep | grep -E 'xray|cloudflared-linux'").toString();
-    console.log("进程检查结果:", processCheck);
-    
+    const alreadyStarting = serviceManager.isStarting();
+    serviceManager.start("manual").catch((error) => {
+      console.error("后台启动服务失败:", error.message);
+    });
     res.json({ 
-      message: "服务启动成功", 
-      details: stdout.toString().slice(0, 1000) // 返回部分输出
+      message: alreadyStarting ? "服务正在启动中" : "启动任务已提交",
+      starting: true,
     });
   } catch (error) {
     console.error("启动服务失败:", error.message);
@@ -111,29 +156,15 @@ app.post('/start-suoha', (req, res) => {
 });
 
 // 重启suoha服务
-app.post('/restart-suoha', (req, res) => {
+app.post('/restart-suoha', async (req, res) => {
   console.log("开始重启suoha服务...");
   try {
-    // 先停止现有服务
-    execSync("pkill -9 xray || true");
-    execSync("pkill -9 cloudflared-linux || true");
-    console.log("已停止旧服务");
-    
-    // 确保suoha.sh可执行
-    execSync("chmod +x suoha.sh");
-    console.log("已设置suoha.sh为可执行");
-    
-    // 重新启动服务
-    const stdout = execSync("bash suoha.sh 2>&1", { timeout: 60000 });
-    console.log("suoha服务重启输出:", stdout.toString());
-    
-    // 检查进程是否在运行
-    const processCheck = execSync("ps -ef | grep -v grep | grep -E 'xray|cloudflared-linux'").toString();
-    console.log("进程检查结果:", processCheck);
-    
+    serviceManager.restart("manual").catch((error) => {
+      console.error("后台重启服务失败:", error.message);
+    });
     res.json({ 
-      message: "服务重启成功",
-      details: stdout.toString().slice(0, 1000) // 返回部分输出
+      message: "重启任务已提交",
+      starting: true,
     });
   } catch (error) {
     console.error("重启服务失败:", error.message);
@@ -146,14 +177,10 @@ app.post('/restart-suoha', (req, res) => {
 });
 
 // 停止suoha服务
-app.post('/stop-suoha', (req, res) => {
+app.post('/stop-suoha', async (req, res) => {
   console.log("开始停止suoha服务...");
   try {
-    execSync("pkill -9 xray || true");
-    execSync("pkill -9 cloudflared-linux || true");
-    console.log("所有suoha相关服务已停止");
-    
-    res.json({ message: "服务停止成功" });
+    res.json(await serviceManager.stop());
   } catch (error) {
     console.error("停止服务失败:", error.message);
     res.status(500).json({ message: "停止服务失败", error: error.message });
@@ -164,20 +191,23 @@ app.post('/stop-suoha', (req, res) => {
 app.get('/logs', (req, res) => {
   try {
     // 检查系统和进程信息
-    const sysInfo = execSync("uname -a && df -h && ls -la").toString();
-    const processInfo = execSync("ps -ef | grep -E 'xray|cloudflared|suoha' || true").toString();
-    const fileCheck = execSync("ls -la suoha.sh v2ray.txt 2>&1 || true").toString();
+    const sysInfo = runCommand("uname -a 2>&1; df -h 2>&1; ls -la 2>&1");
+    const processInfo = runCommand("ps -ef 2>&1 | grep -E 'xray|cloudflared|suoha' || true");
+    const fileCheck = runCommand(`ls -la ${shellQuote(runtimeDir)} ${shellQuote(runtimePath('suoha.sh'))} ${shellQuote(runtimePath('v2ray.txt'))} 2>&1 || true`);
     
     // 提取argo日志，如果存在的话
     let argoLog = "argo.log不存在";
-    if (fs.existsSync('./argo.log')) {
-      argoLog = fs.readFileSync('./argo.log', 'utf8');
+    const argoLogPath = runtimePath('argo.log');
+    if (fs.existsSync(argoLogPath)) {
+      argoLog = fs.readFileSync(argoLogPath, 'utf8');
     }
     
     res.json({
+      ok: true,
       systemInfo: sysInfo,
       processes: processInfo,
       fileStatus: fileCheck,
+      runtimeDir,
       argoLog: argoLog
     });
   } catch (error) {
@@ -218,29 +248,24 @@ app.post('/stop-nezha', (req, res) => {
 
 // suoha服务保活
 function keep_suoha_alive() {
-  exec("ps -ef | grep -v grep | grep -E 'xray|cloudflared-linux'", function (err, stdout, stderr) {
-    if (err) {
-      console.error("Error checking suoha services: ", err);
-    } else if (stdout.includes("xray") && stdout.includes("cloudflared-linux")) {
-      console.log("梭哈服务正在运行");
-    } else {
-      console.log("启动梭哈服务...");
-      exec("chmod +x suoha.sh && bash suoha.sh", function (err, stdout, stderr) {
-        if (err) {
-          console.error("启动梭哈服务失败: ", err);
-        } else {
-          console.log("梭哈服务启动成功");
-        }
-      });
-    }
-  });
+  serviceManager.ensureRunning("keepalive")
+    .then((result) => {
+      console.log(result.started ? "梭哈服务已由保活启动" : "梭哈服务正在运行");
+    })
+    .catch((error) => {
+      console.error("梭哈服务保活检查失败:", error.message);
+    });
 }
 
 // 设置保活检查的间隔时间，单位为毫秒
 setInterval(keep_suoha_alive, 45 * 1000);
 
 // 启动entrypoint.sh脚本
-exec("bash entrypoint.sh", function (err, stdout, stderr) {
+exec(`bash ${shellQuote(path.join(__dirname, 'entrypoint.sh'))}`, {
+  cwd: runtimeDir,
+  timeout: 120000,
+  maxBuffer: 4 * 1024 * 1024,
+}, function (err, stdout, stderr) {
   if (err) {
     console.error("Error executing entrypoint.sh: ", err);
   } else {

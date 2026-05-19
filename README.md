@@ -1,5 +1,13 @@
 # 测试博客
 
+## Azure Web App 运行建议
+
+- 建议部署到 Linux Web App，启动命令保持 `npm start`。
+- 在 Azure Portal 开启 `Always On`，Health check path 配置为 `/healthz`。
+- 运行时文件默认写入 `/home/argoblog`，可通过环境变量 `ARGO_RUNTIME_DIR` 覆盖。
+- `/healthz` 只检查 Node 进程是否存活；`/readyz` 会额外检查 Xray 和 Cloudflared 进程状态。
+- 启动和重启服务会立即返回，实际进度通过页面状态、`/suoha-status`、`/logs` 查看。
+
 
 
 
